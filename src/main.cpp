@@ -10,11 +10,16 @@
 
  **************************************************************************/
 
+// Libraries for the SSD1306 OLED display
 #include <SPI.h>
 #include <Wire.h>
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "fonts.h"
+// Libraries for the DS18B20 sensor
+#include <OneWire.h>
+#include <DallasTemperature.h>
+
 
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
@@ -27,6 +32,26 @@
 #define OLED_RESET     -1 // Reset pin # (or -1 if sharing Arduino reset pin)
 #define SCREEN_ADDRESS 0x3C ///< See datasheet for Address; 0x3D for Adafruit 128x64, 0x3C for Adafruit 128x32, 0x3C for China 128x64
 Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
+
+
+// DS18B20 sensor PINs and init
+#define INNER_ONE_WIRE_BUS  2
+#define MIDDLE_ONE_WIRE_BUS 3
+#define OUTER_ONE_WIRE_BUS  4
+
+OneWire innerOneWire(INNER_ONE_WIRE_BUS);
+OneWire middleOneWire(MIDDLE_ONE_WIRE_BUS);
+OneWire outerOneWire(OUTER_ONE_WIRE_BUS);
+DallasTemperature innerSensor(&innerOneWire);
+DallasTemperature middleSensor(&middleOneWire);
+DallasTemperature outerSensor(&outerOneWire);
+
+
+// variable declarations
+double innerSetpoint = 100, middleSetpoint = 100, outerSetpoint = 90;
+double innerActual, middleActual, outerActual;
+//double innerOutput, middleOutput, outerOutput;
+
 
 // Function declarations
 void drawCenteredTemp(int16_t, int16_t, int16_t, boolean);
@@ -43,30 +68,39 @@ void setup() {
     }
 
     // Clear the buffer; initialize
-    display.clearDisplay();
     display.setTextWrap(false);
     display.setTextSize(1);
 //    display.setFont(&Lato_Hairline_16);
-
-    drawCenteredString(21, 5, "INNER", false);
-    drawCenteredTemp(21, 25, 100, true);
-    drawCenteredTemp(21, 45, 69, false);
-    drawCenteredProgressbar(21, 55, 25, 5, 100);
-
-    drawCenteredString(42+21, 5, "MIDDLE", false);
-    drawCenteredTemp(42+21, 25, 100, true);
-    drawCenteredTemp(42+21, 45, 78, false);
-    drawCenteredProgressbar(42+21, 55, 25, 5, 80);
-
-    drawCenteredString(84+21, 5, "OUTER", false);
-    drawCenteredTemp(84+21, 25, 90, true);
-    drawCenteredTemp(84+21, 45, 64, false);
-    drawCenteredProgressbar(84+20, 55, 25, 5, 40);
-
-    display.display();
 }
 
 void loop() {
+    innerSensor.requestTemperatures();
+    innerActual = innerSensor.getTempCByIndex(0);
+    middleSensor.requestTemperatures();
+    middleActual = middleSensor.getTempCByIndex(0);
+    outerSensor.requestTemperatures();
+    outerActual = outerSensor.getTempCByIndex(0);
+    
+    display.clearDisplay();
+
+    drawCenteredString(21, 5, "INNER", false);
+    drawCenteredTemp(21, 25, innerSetpoint, true);
+    drawCenteredTemp(21, 45, innerActual, false);
+    drawCenteredProgressbar(21, 55, 25, 5, 100);
+
+    drawCenteredString(42+21, 5, "MIDDLE", false);
+    drawCenteredTemp(42+21, 25, middleSetpoint, true);
+    drawCenteredTemp(42+21, 45, middleActual, false);
+    drawCenteredProgressbar(42+21, 55, 25, 5, 80);
+
+    drawCenteredString(84+21, 5, "OUTER", false);
+    drawCenteredTemp(84+21, 25, outerSetpoint, true);
+    drawCenteredTemp(84+21, 45, outerActual, false);
+    drawCenteredProgressbar(84+20, 55, 25, 5, 40);
+
+    display.display();
+
+    delay(750);
 }
 
 void drawCenteredProgressbar(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t percentage)
