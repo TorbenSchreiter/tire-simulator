@@ -21,7 +21,8 @@
 #include <DallasTemperature.h>
 // Library for the PID-based temperature controller
 #include <PID_v1.h>
-
+// Library for rotary encoder
+#include <NewEncoder.h>
 
 #define SCREEN_WIDTH 128 // OLED display width, in pixels
 #define SCREEN_HEIGHT 64 // OLED display height, in pixels
@@ -37,9 +38,9 @@ Adafruit_SSD1306 display(SCREEN_WIDTH, SCREEN_HEIGHT, &Wire, OLED_RESET);
 
 
 // DS18B20 sensor Pins and init
-#define INNER_ONE_WIRE_BUS  2
-#define MIDDLE_ONE_WIRE_BUS 3
-#define OUTER_ONE_WIRE_BUS  4
+#define INNER_ONE_WIRE_BUS  32
+#define MIDDLE_ONE_WIRE_BUS 33
+#define OUTER_ONE_WIRE_BUS  25
 
 OneWire innerOneWire(INNER_ONE_WIRE_BUS);
 OneWire middleOneWire(MIDDLE_ONE_WIRE_BUS);
@@ -51,9 +52,9 @@ DallasTemperature outerSensor(&outerOneWire);
 
 // PID initialization
 #define PWM_RESOLUTION 255
-#define INNER_PWM  9 // do not change to pins other than D9 or D10 (on an Arduino Nano)
-//#define MIDDLE_PWM ? // Arduino Nano only has two fast PWM output pins, so we simplify the setup and go for only two heating mats for inner and outer
-#define OUTER_PWM  10 // do not change to pins other than D9 or D10 (on an Arduino Nano)
+#define INNER_PWM     4 // do not change to pins other than D9 or D10 (on an Arduino Nano)
+//#define MIDDLE_PWM  ? // Arduino Nano only has two fast PWM output pins, so we simplify the setup and go for only two heating mats for inner and outer
+#define OUTER_PWM    2 // do not change to pins other than D9 or D10 (on an Arduino Nano)
 
 // variable declarations
 double innerSetpoint = 100, middleSetpoint = 25, outerSetpoint = 15;
@@ -67,17 +68,37 @@ PID middlePID(&middleActual, &middlePWMOutput, &middleSetpoint, Kp, Ki, Kd, DIRE
 PID outerPID(&outerActual, &outerPWMOutput, &outerSetpoint, Kp, Ki, Kd, DIRECT);
 
 
+NewEncoder encoder(26, 27, -20, 20, 0, FULL_PULSE);
+int16_t prevEncoderValue;
+
+
 // Function declarations
 void drawCenteredTemp(int16_t, int16_t, int16_t, boolean);
 void drawCenteredString(int16_t, int16_t, const char*, boolean);
 void drawCenteredProgressbar(int16_t, int16_t, int16_t, int16_t, uint16_t);
+/*
 void analogWriteScaled_Init(void);
 void analogWriteScaledD9(uint8_t);
 void analogWriteScaledD10(uint8_t);
-
+*/
 
 void setup() {
-    Serial.begin(9600);
+    Serial.begin(115200);
+    Wire.begin(GPIOSDA,GPIOSCL); // initialize I2C channel w/ I2C pins from platformio.ini
+    NewEncoder::EncoderState state;
+
+    if (!encoder.begin()) {
+        Serial.println("Encoder Failed to Start. Check pin assignments and available interrupts. Aborting.");
+        while (1) {
+        yield();
+        }
+    } else {
+        encoder.getState(state);
+        Serial.print("Encoder Successfully Started at value = ");
+        prevEncoderValue = state.currentValue;
+        Serial.println(prevEncoderValue);
+    }
+  
     // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
     if(!display.begin(SSD1306_SWITCHCAPVCC, SCREEN_ADDRESS)) {
       Serial.println(F("SSD1306 allocation failed"));
@@ -90,7 +111,7 @@ void setup() {
 //    display.setFont(&Lato_Hairline_16);
 
     // init PWM output scaling to 20kHz
-    analogWriteScaled_Init();
+    //analogWriteScaled_Init();
     //2do: set pinMode for PWM Mosfet...
 
     // set PID ranges and activate
@@ -104,6 +125,30 @@ void setup() {
 }
 
 void loop() {
+    int16_t currentValue;
+    NewEncoder::EncoderState currentEncoderState;
+
+    if (encoder.getState(currentEncoderState)) {
+        Serial.print("Encoder: ");
+        currentValue = currentEncoderState.currentValue;
+        if (currentValue != prevEncoderValue) {
+        Serial.println(currentValue);
+        prevEncoderValue = currentValue;
+        } else
+        switch (currentEncoderState.currentClick) {
+            case NewEncoder::UpClick:
+            Serial.println("at upper limit.");
+            break;
+
+            case NewEncoder::DownClick:
+            Serial.println("at lower limit.");
+            break;
+
+            default:
+            break;
+        }
+    }
+  
     innerSensor.requestTemperatures();
     innerActual = innerSensor.getTempCByIndex(0);
     middleSensor.requestTemperatures();
@@ -179,7 +224,7 @@ void drawCenteredString(int16_t x, int16_t y, const char *buf, boolean inverted)
     display.print(buf);
 }
 
-
+/*
 // Scale PWM output to 20kHz
 // Kudos to Coding_Badly (https://forum.arduino.cc/t/how-to-get-20khz-pwm-on-pin-d9/132857/15)
 void analogWriteScaled_Init(void)
@@ -264,3 +309,4 @@ void analogWriteScaledD10(uint8_t value)
     // using 780 as max scaling range to account for some inaccuracies
     OCR1B = constrain(map(value, 0, PWM_RESOLUTION, 0, 780), 0, 799);
 }
+*/
