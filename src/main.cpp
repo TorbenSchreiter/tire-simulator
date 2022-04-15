@@ -57,7 +57,7 @@ DallasTemperature outerSensor(&outerOneWire);
 #define OUTER_PWM    2 // do not change to pins other than D9 or D10 (on an Arduino Nano)
 
 // variable declarations
-double innerSetpoint = 100, middleSetpoint = 25, outerSetpoint = 15;
+double innerSetpoint, middleSetpoint = 25, outerSetpoint = 15;
 double innerActual, middleActual, outerActual;
 double innerPWMOutput, middlePWMOutput, outerPWMOutput;
 
@@ -68,8 +68,9 @@ PID middlePID(&middleActual, &middlePWMOutput, &middleSetpoint, Kp, Ki, Kd, DIRE
 PID outerPID(&outerActual, &outerPWMOutput, &outerSetpoint, Kp, Ki, Kd, DIRECT);
 
 
-NewEncoder encoder(26, 27, -20, 20, 0, FULL_PULSE);
-int16_t prevEncoderValue;
+NewEncoder innerEncoder(26, 27, -20, 200, 99, FULL_PULSE); // temperature range: -20 to 200 degrees celsius
+//NewEncoder outerEncoder(26, 27, -20, 200, 0, FULL_PULSE); // temperature range: -20 to 200 degrees celsius
+//int16_t prevEncoderValue;
 
 
 // Function declarations
@@ -85,18 +86,18 @@ void analogWriteScaledD10(uint8_t);
 void setup() {
     Serial.begin(115200);
     Wire.begin(GPIOSDA,GPIOSCL); // initialize I2C channel w/ I2C pins from platformio.ini
-    NewEncoder::EncoderState state;
+    NewEncoder::EncoderState innerEncoderState;
 
-    if (!encoder.begin()) {
+    if (!innerEncoder.begin()) {
         Serial.println("Encoder Failed to Start. Check pin assignments and available interrupts. Aborting.");
         while (1) {
         yield();
         }
     } else {
-        encoder.getState(state);
+        innerEncoder.getState(innerEncoderState);
         Serial.print("Encoder Successfully Started at value = ");
-        prevEncoderValue = state.currentValue;
-        Serial.println(prevEncoderValue);
+        innerSetpoint = innerEncoderState.currentValue;
+        Serial.println(innerSetpoint);
     }
   
     // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
@@ -128,12 +129,12 @@ void loop() {
     int16_t currentValue;
     NewEncoder::EncoderState currentEncoderState;
 
-    if (encoder.getState(currentEncoderState)) {
+    if (innerEncoder.getState(currentEncoderState)) {
         Serial.print("Encoder: ");
         currentValue = currentEncoderState.currentValue;
-        if (currentValue != prevEncoderValue) {
+        if (currentValue != innerSetpoint) {
         Serial.println(currentValue);
-        prevEncoderValue = currentValue;
+        innerSetpoint = currentValue;
         } else
         switch (currentEncoderState.currentClick) {
             case NewEncoder::UpClick:
