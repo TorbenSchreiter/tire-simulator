@@ -54,10 +54,21 @@ DallasTemperature outerSensor(&outerOneWire);
 
 
 // PID initialization
+// use the first ESP32 channels of 16 channels (started from zero)
+#define LEDC_CHANNEL_0 0
+#define LEDC_CHANNEL_1 1
+#define LEDC_CHANNEL_2 2
+
+// use 13 bit precission for LEDC timer
+#define LEDC_TIMER_13_BIT 13
 #define PWM_RESOLUTION 255
-#define INNER_PWM     4 // do not change to pins other than D9 or D10 (on an Arduino Nano)
-//#define MIDDLE_PWM  ? // Arduino Nano only has two fast PWM output pins, so we simplify the setup and go for only two heating mats for inner and outer
-#define OUTER_PWM    2 // do not change to pins other than D9 or D10 (on an Arduino Nano)
+
+// use 20 kHz as a LEDC base frequency (= max. PWM frequency)
+#define LEDC_BASE_FREQ 20000
+
+#define INNER_PWM     4
+//#define MIDDLE_PWM  ? // currently: simplified setup with only two heating mats for inner and outer
+#define OUTER_PWM     2
 
 // variable declarations
 double innerSetpoint, middleSetpoint = 25, outerSetpoint = 15;
@@ -73,8 +84,6 @@ PID outerPID(&outerActual, &outerPWMOutput, &outerSetpoint, Kp, Ki, Kd, DIRECT);
 
 NewEncoder innerEncoder(26, 27, -20, 200, 99, FULL_PULSE); // temperature range: -20 to 200 degrees celsius
 //NewEncoder outerEncoder(26, 27, -20, 200, 0, FULL_PULSE); // temperature range: -20 to 200 degrees celsius
-void ESP_ISR innerEncoderCallback(NewEncoder *encPtr, const volatile NewEncoder::EncoderState *state, void *uPtr);
-//void ESP_ISR outerEncoderCallback(NewEncoder *encPtr, const volatile NewEncoder::EncoderState *state, void *uPtr);
 volatile NewEncoder::EncoderState newInnerEncoderState, newOuterEncoderState;
 volatile bool newInnerEncoderValue = false, newOuterEncoderValue = false;
 
@@ -91,11 +100,10 @@ void updateOuterPWM();
 void drawCenteredTemp(int16_t, int16_t, int16_t, boolean);
 void drawCenteredString(int16_t, int16_t, const char*, boolean);
 void drawCenteredProgressbar(int16_t, int16_t, int16_t, int16_t, uint16_t);
-/*
-void analogWriteScaled_Init(void);
-void analogWriteScaledD9(uint8_t);
-void analogWriteScaledD10(uint8_t);
-*/
+
+void ESP_ISR innerEncoderCallback(NewEncoder *encPtr, const volatile NewEncoder::EncoderState *state, void *uPtr);
+//void ESP_ISR outerEncoderCallback(NewEncoder *encPtr, const volatile NewEncoder::EncoderState *state, void *uPtr);
+void ledcAnalogWrite(uint8_t channel, uint32_t value, uint32_t valueMax = PWM_RESOLUTION);
 
 
 Scheduler r, hpr;
@@ -138,10 +146,6 @@ void setup() {
     display.setTextSize(1);
 //    display.setFont(&Lato_Hairline_16);
 
-    // init PWM output scaling to 20kHz
-    //analogWriteScaled_Init();
-    //2do: set pinMode for PWM Mosfet...
-
     // set PID ranges and activate
     innerPID.SetOutputLimits(0, PWM_RESOLUTION);
     middlePID.SetOutputLimits(0, PWM_RESOLUTION);
@@ -150,6 +154,15 @@ void setup() {
     innerPID.SetMode(AUTOMATIC);
     middlePID.SetMode(AUTOMATIC);
     outerPID.SetMode(AUTOMATIC);
+
+    // init PWM output scaling to 20kHz
+    // Setup PWM timer and attach timer to a led pin
+    ledcSetup(LEDC_CHANNEL_0, LEDC_BASE_FREQ, LEDC_TIMER_13_BIT);
+    ledcAttachPin(INNER_PWM, LEDC_CHANNEL_0);
+//    ledcSetup(LEDC_CHANNEL_1, LEDC_BASE_FREQ, LEDC_TIMER_13_BIT);
+//    ledcAttachPin(MIDDLE_PWM, LEDC_CHANNEL_1);
+    ledcSetup(LEDC_CHANNEL_2, LEDC_BASE_FREQ, LEDC_TIMER_13_BIT);
+    ledcAttachPin(OUTER_PWM, LEDC_CHANNEL_2);
 
     // start TaskScheduler runner
     r.setHighPriorityScheduler(&hpr); // high prio for display and encoders
@@ -245,11 +258,8 @@ void updateInnerPWM() {
     // update PID calculations
     innerPID.Compute();
 
-    // update PWM output frequencies
-//    analogWriteScaledD9(innerPWMOutput);
-    // middlePWMOutput is currently not connected due to only 2x heating mats connected and only 2x PWM output Pins on the Arduino Nano
-    // middlePID is displayed only for convenience reasons
-//    analogWriteScaledD10(outerPWMOutput);
+    // update PWM output frequency
+    ledcAnalogWrite(LEDC_CHANNEL_0, innerPWMOutput);
 
     tUpdateInner.setCallback(&updateInnerSensor);
 }
@@ -258,7 +268,10 @@ void updateMiddlePWM() {
     // update PID calculations
     middlePID.Compute();
 
-    //2do PWM
+    // update PWM output frequency
+//    ledcAnalogWrite(LEDC_CHANNEL_1, middlePWMOutput);
+// middlePWMOutput is currently not connected due to only 2x heating mats connected and only 2x PWM output Pins on the Arduino Nano
+// middlePID is displayed only for convenience reasons
 
     tUpdateMiddle.setCallback(&updateMiddleSensor);
 }
@@ -267,7 +280,8 @@ void updateOuterPWM() {
     // update PID calculations
     outerPID.Compute();
 
-    //2do PWM
+    // update PWM output frequency
+    ledcAnalogWrite(LEDC_CHANNEL_2, outerPWMOutput);
 
     tUpdateOuter.setCallback(&updateOuterSensor);
 }
@@ -316,89 +330,12 @@ void ESP_ISR innerEncoderCallback(NewEncoder *encPtr, const volatile NewEncoder:
     tUpdateSetpoints.forceNextIteration();
 }
 
-/*
-// Scale PWM output to 20kHz
-// Kudos to Coding_Badly (https://forum.arduino.cc/t/how-to-get-20khz-pwm-on-pin-d9/132857/15)
-void analogWriteScaled_Init(void)
-{
-  // Stop the timer while we muck with it
+// Arduino like analogWrite for ESP32 LEDC
+// value has to be between 0 and valueMax
+void ledcAnalogWrite(uint8_t channel, uint32_t value, uint32_t valueMax) {
+    // calculate duty, 8191 from 2 ^ 13 - 1
+    uint32_t duty = (8191 / valueMax) * min(value, valueMax);
 
-  TCCR1B = (0 << ICNC1) | (0 << ICES1) | (0 << WGM13) | (0 << WGM12) | (0 << CS12) | (0 << CS11) | (0 << CS10);
-  
-  // Set the timer to mode 14...
-  //
-  // Mode  WGM13  WGM12  WGM11  WGM10  Timer/Counter Mode of Operation  TOP   Update of OCR1x at TOV1  Flag Set on
-  //              CTC1   PWM11  PWM10
-  // ----  -----  -----  -----  -----  -------------------------------  ----  -----------------------  -----------
-  // 14    1      1      1      0      Fast PWM                         ICR1  BOTTOM                   TOP
-  
-  // Set output on Channel A and B to...
-  //
-  // COM1z1  COM1z0  Description
-  // ------  ------  -----------------------------------------------------------
-  // 1       0       Clear OC1A/OC1B on Compare Match (Set output to low level).
-  
-  TCCR1A = 
-      (1 << COM1A1) | (0 << COM1A0) |   // COM1A1, COM1A0 = 1, 0
-      (1 << COM1B1) | (0 << COM1B0) |
-      (1 << WGM11) | (0 << WGM10);      // WGM11, WGM10 = 1, 0
-
-  // Set TOP to...
-  //
-  // fclk_I/O = 16000000
-  // N        = 1
-  // TOP      = 799
-  //
-  // fOCnxPWM = fclk_I/O / (N * (1 + TOP))
-  // fOCnxPWM = 16000000 / (1 * (1 + 799))
-  // fOCnxPWM = 16000000 / 800
-  // fOCnxPWM = 20000
-
-  ICR1 = 799;
-
-  // Ensure the first slope is complete
-
-  TCNT1 = 0;
-
-  // Ensure Channel A and B start at zero / off
-
-  OCR1A = 0;
-  OCR1B = 0;
-
-  // We don't need no stinkin interrupts
-
-  TIMSK1 = (0 << ICIE1) | (0 << OCIE1B) | (0 << OCIE1A) | (0 << TOIE1);
-
-  // Ensure the Channel A and B pins are configured for output
-  DDRB |= (1 << DDB1);
-  DDRB |= (1 << DDB2);
-
-  // Start the timer...
-  //
-  // CS12  CS11  CS10  Description
-  // ----  ----  ----  ------------------------
-  // 0     0     1     clkI/O/1 (No prescaling)
-
-  TCCR1B =
-      (0 << ICNC1) | (0 << ICES1) |
-      (1 << WGM13) | (1 << WGM12) |              // WGM13, WGM12 = 1, 1
-      (0 << CS12) | (0 << CS11) | (1 << CS10);
+    // write duty to LEDC
+    ledcWrite(channel, duty);
 }
-
-// Kudos to Mat 13 (https://forum.arduino.cc/t/how-to-get-20khz-pwm-on-pin-d9/132857/17)
-void analogWriteScaledD9(uint8_t value)
-{
-    // input variable value varies from 0 to PWM_RESOLUTION (default: 255)
-    // but awaited range in OCR1A/OCR1B is from 0 to 799 and nothing else!
-    // using 780 as max scaling range to account for some inaccuracies
-    OCR1A = constrain(map(value, 0, PWM_RESOLUTION, 0, 780), 0, 799);
-}
-
-void analogWriteScaledD10(uint8_t value)
-{
-    // input variable value varies from 0 to PWM_RESOLUTION (default: 255)
-    // but awaited range in OCR1A/OCR1B is from 0 to 799 and nothing else!
-    // using 780 as max scaling range to account for some inaccuracies
-    OCR1B = constrain(map(value, 0, PWM_RESOLUTION, 0, 780), 0, 799);
-}
-*/
