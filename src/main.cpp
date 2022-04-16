@@ -16,6 +16,9 @@
 #include <Adafruit_GFX.h>
 #include <Adafruit_SSD1306.h>
 #include "fonts.h"
+ #define _TASK_TIMECRITICAL
+ #define _TASK_PRIORITY
+#include <TaskScheduler.h>
 // Libraries for the DS18B20 sensor
 #include <OneWire.h>
 #include <DallasTemperature.h>
@@ -70,10 +73,21 @@ PID outerPID(&outerActual, &outerPWMOutput, &outerSetpoint, Kp, Ki, Kd, DIRECT);
 
 NewEncoder innerEncoder(26, 27, -20, 200, 99, FULL_PULSE); // temperature range: -20 to 200 degrees celsius
 //NewEncoder outerEncoder(26, 27, -20, 200, 0, FULL_PULSE); // temperature range: -20 to 200 degrees celsius
-//int16_t prevEncoderValue;
-
+void ESP_ISR innerEncoderCallback(NewEncoder *encPtr, const volatile NewEncoder::EncoderState *state, void *uPtr);
+//void ESP_ISR outerEncoderCallback(NewEncoder *encPtr, const volatile NewEncoder::EncoderState *state, void *uPtr);
+volatile NewEncoder::EncoderState newInnerEncoderState, newOuterEncoderState;
+volatile bool newInnerEncoderValue = false, newOuterEncoderValue = false;
 
 // Function declarations
+void updateSetpoints();
+void updateDisplay();
+void updateInnerSensor();
+void updateMiddleSensor();
+void updateOuterSensor();
+void updateInnerPWM();
+void updateMiddlePWM();
+void updateOuterPWM();
+
 void drawCenteredTemp(int16_t, int16_t, int16_t, boolean);
 void drawCenteredString(int16_t, int16_t, const char*, boolean);
 void drawCenteredProgressbar(int16_t, int16_t, int16_t, int16_t, uint16_t);
@@ -82,6 +96,18 @@ void analogWriteScaled_Init(void);
 void analogWriteScaledD9(uint8_t);
 void analogWriteScaledD10(uint8_t);
 */
+
+
+Scheduler r, hpr;
+
+//Tasks
+Task tUpdateSetpoints(200, TASK_FOREVER, &updateSetpoints, &hpr);
+Task tUpdateDisplay(200, TASK_FOREVER, &updateDisplay, &hpr);
+
+Task tUpdateInner(1000, TASK_FOREVER, &updateInnerSensor, &r);
+Task tUpdateMiddle(1000, TASK_FOREVER, &updateMiddleSensor, &r);
+Task tUpdateOuter(1000, TASK_FOREVER, &updateOuterSensor, &r);
+
 
 void setup() {
     Serial.begin(115200);
@@ -98,6 +124,7 @@ void setup() {
         Serial.print("Encoder Successfully Started at value = ");
         innerSetpoint = innerEncoderState.currentValue;
         Serial.println(innerSetpoint);
+        innerEncoder.attachCallback(innerEncoderCallback);
     }
   
     // SSD1306_SWITCHCAPVCC = generate display voltage from 3.3V internally
@@ -123,45 +150,49 @@ void setup() {
     innerPID.SetMode(AUTOMATIC);
     middlePID.SetMode(AUTOMATIC);
     outerPID.SetMode(AUTOMATIC);
+
+    // start TaskScheduler runner
+    r.setHighPriorityScheduler(&hpr); // high prio for display and encoders
+    r.enableAll(true); // this will recursively enable the higher priority tasks as well
 }
 
 void loop() {
-    int16_t currentValue;
-    NewEncoder::EncoderState currentEncoderState;
+    r.execute();
+}
 
-    if (innerEncoder.getState(currentEncoderState)) {
+void updateSetpoints() {
+    // read new setpoint from encoder
+    int16_t currentValue;
+    NewEncoder::EncoderClick currentClick;
+
+    if (newInnerEncoderValue) {
+        noInterrupts();
+        currentValue = newInnerEncoderState.currentValue;
+        currentClick = newInnerEncoderState.currentClick;
+        newInnerEncoderValue = false;
+        interrupts();
         Serial.print("Encoder: ");
-        currentValue = currentEncoderState.currentValue;
         if (currentValue != innerSetpoint) {
         Serial.println(currentValue);
         innerSetpoint = currentValue;
-        } else
-        switch (currentEncoderState.currentClick) {
-            case NewEncoder::UpClick:
-            Serial.println("at upper limit.");
-            break;
+        } else {
+            switch (currentClick) {
+                case NewEncoder::UpClick:
+                Serial.println("at upper limit.");
+                break;
 
-            case NewEncoder::DownClick:
-            Serial.println("at lower limit.");
-            break;
+                case NewEncoder::DownClick:
+                Serial.println("at lower limit.");
+                break;
 
-            default:
-            break;
+                default:
+                break;
+            }
         }
     }
-  
-    innerSensor.requestTemperatures();
-    innerActual = innerSensor.getTempCByIndex(0);
-    middleSensor.requestTemperatures();
-    middleActual = middleSensor.getTempCByIndex(0);
-    outerSensor.requestTemperatures();
-    outerActual = outerSensor.getTempCByIndex(0);
+}
 
-    // update PID calculations
-    innerPID.Compute();
-    middlePID.Compute();
-    outerPID.Compute();
-
+void updateDisplay() {
     // refresh screen
     display.clearDisplay();
 
@@ -181,6 +212,38 @@ void loop() {
     drawCenteredProgressbar(84+20, 55, 25, 5, map(outerPWMOutput, 0, PWM_RESOLUTION, 0, 100));
 
     display.display();
+}
+
+void updateInnerSensor() {
+    // get temperature readings
+    innerSensor.requestTemperatures();
+    innerActual = innerSensor.getTempCByIndex(0);
+
+    tUpdateInner.setCallback(&updateInnerPWM);
+    tUpdateInner.forceNextIteration();
+}
+
+void updateMiddleSensor() {
+    // get temperature readings
+    middleSensor.requestTemperatures();
+    middleActual = middleSensor.getTempCByIndex(0);
+
+    tUpdateMiddle.setCallback(&updateMiddlePWM);
+    tUpdateMiddle.forceNextIteration();
+}
+
+void updateOuterSensor() {
+    // get temperature readings
+    outerSensor.requestTemperatures();
+    outerActual = outerSensor.getTempCByIndex(0);
+
+    tUpdateOuter.setCallback(&updateOuterPWM);
+    tUpdateOuter.forceNextIteration();
+}
+
+void updateInnerPWM() {
+    // update PID calculations
+    innerPID.Compute();
 
     // update PWM output frequencies
 //    analogWriteScaledD9(innerPWMOutput);
@@ -188,8 +251,27 @@ void loop() {
     // middlePID is displayed only for convenience reasons
 //    analogWriteScaledD10(outerPWMOutput);
 
-    delay(750);
+    tUpdateInner.setCallback(&updateInnerSensor);
 }
+
+void updateMiddlePWM() {
+    // update PID calculations
+    middlePID.Compute();
+
+    //2do PWM
+
+    tUpdateMiddle.setCallback(&updateMiddleSensor);
+}
+
+void updateOuterPWM() {
+    // update PID calculations
+    outerPID.Compute();
+
+    //2do PWM
+
+    tUpdateOuter.setCallback(&updateOuterSensor);
+}
+
 
 void drawCenteredProgressbar(int16_t x, int16_t y, int16_t w, int16_t h, uint16_t percentage)
 {
@@ -223,6 +305,15 @@ void drawCenteredString(int16_t x, int16_t y, const char *buf, boolean inverted)
     }
     display.setCursor((x-w/2), y);
     display.print(buf);
+}
+
+void ESP_ISR innerEncoderCallback(NewEncoder *encPtr, const volatile NewEncoder::EncoderState *state, void *uPtr) {
+    (void) encPtr;
+    (void) uPtr;
+    memcpy((void *)&newInnerEncoderState, (void *)state, sizeof(NewEncoder::EncoderState));
+    newInnerEncoderValue = true;
+    
+    tUpdateSetpoints.forceNextIteration();
 }
 
 /*
